@@ -1,0 +1,7 @@
+numpy<2
+opencv-python==4.10.0.84
+tqdm
+pyyaml
+requests
+python-dotenv
+roboflow
