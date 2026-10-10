@@ -1,10 +1,12 @@
-"""Generate labeled synthetic scenes: bills (and real coin cutouts) on random surfaces.
+"""Generate labeled multi-object scenes from real cutouts: several bills + coins together.
 
+The Roboflow photos show one denomination at a time; the app must count mixed piles.
 Each scene:
-  background  = DTD texture or a real coin photo (its coin labels are kept)
-  bills       = template -> color jitter -> crease shading -> perspective warp -> drop shadow
-  coins       = elliptical cutouts from real labeled coin photos, sized relative to the bills
-  camera      = lighting gradient, blur, noise, JPEG artifacts
+  background = DTD texture or a real labeled photo (its labels are kept)
+  bills      = real bill crops -> color jitter -> crease shading -> perspective warp -> drop shadow
+  coins      = elliptical crops of real coins, sized relative to the bills (real mm ratios)
+  camera     = lighting gradient, blur, noise, JPEG artifacts
+Cutouts come from the same split only (train scenes never use val photos).
 Labels are boxes around the *visible* part of each object; mostly hidden objects are dropped.
 
 Usage: python synth_bills.py --train 3000 --val 300
@@ -16,12 +18,13 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
-from config import BACKGROUNDS, CLASSES, IMG_SIZE, MERGED, SEED, SYNTH, TEMPLATES
+from config import BACKGROUNDS, CLASSES, IMG_SIZE, MERGED, SEED, SYNTH
 
 S = IMG_SIZE
 BILL_WIDTH_MM = {"bill_1000": 136, "bill_5000": 142, "bill_10000": 148, "bill_50000": 154}
 COIN_DIAM_MM = {"coin_10": 18.0, "coin_50": 21.6, "coin_100": 24.0, "coin_500": 26.5}
 MIN_VISIBLE = {"bill": 0.35, "coin": 0.6}
+MAX_CUTOUTS = 400  # per class
 
 
 def imread(path):
@@ -34,68 +37,83 @@ def read_labels(img_path):
     return [(int(r[0]), *map(float, r[1:5])) for r in rows]
 
 
+def box_px(label, w, h):
+    _, cx, cy, bw, bh = label
+    return (max(int((cx - bw / 2) * w), 0), max(int((cy - bh / 2) * h), 0),
+            min(int((cx + bw / 2) * w), w), min(int((cy + bh / 2) * h), h))
+
+
 class Assets:
     def __init__(self, split):
-        self.templates = {}
-        for p in sorted(TEMPLATES.glob("bill_*.png")):
-            cls = "_".join(p.stem.split("_")[:2])
-            self.templates.setdefault(cls, []).append(imread(p))
-        if len(self.templates) != 4:
-            raise SystemExit(f"need templates for 4 bills, found {sorted(self.templates)}")
-
         self.textures = sorted(BACKGROUNDS.glob("*.jpg"))
-        # real coin photos: used as backgrounds and as a source of coin cutouts (same split only)
-        coin_dir = MERGED / split / "images"
-        self.coin_scenes, self.coin_cutouts = [], {c: [] for c in COIN_DIAM_MM}
-        for img_path in sorted(coin_dir.glob("*")) if coin_dir.exists() else []:
+        self.scenes = sorted((MERGED / split / "images").glob("*"))
+        self.cutouts = {c: [] for c in CLASSES}
+        for img_path in random.sample(self.scenes, len(self.scenes)):
+            if all(len(v) >= MAX_CUTOUTS for v in self.cutouts.values()):
+                break
             labels = read_labels(img_path)
-            if labels and all(CLASSES[l[0]].startswith("coin") for l in labels):
-                self.coin_scenes.append(img_path)
-        for img_path in self.coin_scenes[:1500]:
+            wanted = [l for l in labels if len(self.cutouts[CLASSES[l[0]]]) < MAX_CUTOUTS]
+            if not wanted:
+                continue
             img = imread(img_path)
             h, w = img.shape[:2]
-            for cls_id, cx, cy, bw, bh in read_labels(img_path):
-                x1, y1 = int((cx - bw / 2) * w), int((cy - bh / 2) * h)
-                x2, y2 = int((cx + bw / 2) * w), int((cy + bh / 2) * h)
-                if min(x2 - x1, y2 - y1) >= 40 and 0.8 < (x2 - x1) / (y2 - y1) < 1.25:
-                    self.coin_cutouts[CLASSES[cls_id]].append(img[max(y1, 0):y2, max(x1, 0):x2].copy())
-        print(f"[{split}] textures {len(self.textures)}, coin scenes {len(self.coin_scenes)}, "
-              f"coin cutouts {[len(v) for v in self.coin_cutouts.values()]}")
+            for l in wanted:
+                x1, y1, x2, y2 = box_px(l, w, h)
+                bw, bh = x2 - x1, y2 - y1
+                if min(bw, bh) < 40:
+                    continue
+                crop = img[y1:y2, x1:x2]
+                if CLASSES[l[0]].startswith("coin"):
+                    ok = 0.8 < bw / bh < 1.25            # round, seen from above
+                else:
+                    if bh > bw:
+                        crop = cv2.rotate(crop, random.choice([cv2.ROTATE_90_CLOCKWISE,
+                                                               cv2.ROTATE_90_COUNTERCLOCKWISE]))
+                    ok = 1.7 < max(bw, bh) / min(bw, bh) < 2.6  # flat, roughly axis-aligned bill
+                if ok:
+                    self.cutouts[CLASSES[l[0]]].append(crop.copy())
+        print(f"[{split}] textures {len(self.textures)}, scenes {len(self.scenes)}, cutouts "
+              + ", ".join(f"{c}={len(v)}" for c, v in self.cutouts.items()))
+        missing = [c for c in BILL_WIDTH_MM if not self.cutouts[c]]
+        if missing:
+            raise SystemExit(f"no bill cutouts for {missing}; run merge_roboflow.py first")
 
 
-def random_crop_resize(img):
+def texture_background(path):
+    img = imread(path)
     h, w = img.shape[:2]
     scale = S / min(h, w) * random.uniform(1.0, 1.4)
     img = cv2.resize(img, (max(S, int(w * scale)), max(S, int(h * scale))))
-    y = random.randint(0, img.shape[0] - S)
-    x = random.randint(0, img.shape[1] - S)
-    return img[y:y + S, x:x + S]
+    y, x = random.randint(0, img.shape[0] - S), random.randint(0, img.shape[1] - S)
+    return img[y:y + S, x:x + S].copy(), []
 
 
-def coin_scene_background(path):
-    """Square-pad a real coin photo to SxS and return it with its coin objects (as masks)."""
+def scene_background(path):
+    """Letterbox a real labeled photo into SxS; its objects become (ellipse/rect) masks."""
     img = imread(path)
     h, w = img.shape[:2]
     scale = S / max(h, w)
     img = cv2.resize(img, (int(w * scale), int(h * scale)))
-    canvas = cv2.resize(img, (S, S))  # stretched copy as filler behind the letterbox
-    canvas = cv2.GaussianBlur(canvas, (51, 51), 0)
+    canvas = cv2.GaussianBlur(cv2.resize(img, (S, S)), (51, 51), 0)
     oy, ox = (S - img.shape[0]) // 2, (S - img.shape[1]) // 2
     canvas[oy:oy + img.shape[0], ox:ox + img.shape[1]] = img
     objects = []
-    for cls_id, cx, cy, bw, bh in read_labels(path):
+    for l in read_labels(path):
+        x1, y1, x2, y2 = box_px(l, img.shape[1], img.shape[0])
         m = np.zeros((S, S), np.float32)
-        center = (int(ox + cx * img.shape[1]), int(oy + cy * img.shape[0]))
-        axes = (max(1, int(bw * img.shape[1] / 2)), max(1, int(bh * img.shape[0] / 2)))
-        cv2.ellipse(m, center, axes, 0, 0, 360, 1.0, -1)
-        objects.append({"cls": cls_id, "mask": m, "area": m.sum()})
+        if CLASSES[l[0]].startswith("coin"):
+            cv2.ellipse(m, ((x1 + x2) // 2 + ox, (y1 + y2) // 2 + oy),
+                        (max(1, (x2 - x1) // 2), max(1, (y2 - y1) // 2)), 0, 0, 360, 1.0, -1)
+        else:
+            m[y1 + oy:y2 + oy, x1 + ox:x2 + ox] = 1.0
+        objects.append({"cls": l[0], "mask": m, "area": m.sum()})
     return canvas, objects
 
 
 def jitter_color(img):
     img = img.astype(np.float32)
-    img = img * random.uniform(0.7, 1.25) + random.uniform(-25, 25)          # contrast / brightness
-    img = img * np.array([random.uniform(0.9, 1.1) for _ in range(3)])        # white balance
+    img = img * random.uniform(0.75, 1.2) + random.uniform(-20, 20)       # contrast / brightness
+    img = img * np.array([random.uniform(0.92, 1.08) for _ in range(3)])  # white balance
     return np.clip(img, 0, 255).astype(np.uint8)
 
 
@@ -103,14 +121,10 @@ def add_crease(img):
     """Fake a fold: darken one side of a random line and draw a soft crease highlight."""
     h, w = img.shape[:2]
     out = img.astype(np.float32)
-    if random.random() < 0.5:
+    if random.random() < 0.4:
         x = int(w * random.uniform(0.3, 0.7))
-        ramp = np.linspace(1.0, random.uniform(0.75, 0.95), w - x)
-        out[:, x:] *= ramp[None, :, None]
+        out[:, x:] *= np.linspace(1.0, random.uniform(0.75, 0.95), w - x)[None, :, None]
         cv2.line(out, (x, 0), (x, h), (255, 255, 255), max(1, w // 300))
-    if random.random() < 0.3:
-        y = int(h * random.uniform(0.3, 0.7))
-        out[y:] *= random.uniform(0.85, 0.97)
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
@@ -125,10 +139,10 @@ def paste(canvas, objects, patch, mask, cls_id, shadow=True):
     canvas[:] = (canvas * (1 - soft) + patch * soft).astype(np.uint8)
     for o in objects:
         o["mask"] = o["mask"] * (1 - mask)
-    objects.append({"cls": cls_id, "mask": mask.copy(), "area": None})
+    objects.append({"cls": cls_id, "mask": mask.copy(), "area": mask.sum()})
 
 
-def warp_to_canvas(img, quad):
+def warp_quad(img, quad):
     h, w = img.shape[:2]
     src = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
     M = cv2.getPerspectiveTransform(src, np.float32(quad))
@@ -148,11 +162,9 @@ def bill_quad(width, aspect, center, angle, persp):
 
 def camera_effects(img):
     img = img.astype(np.float32)
-    # lighting gradient
     gx, gy = np.meshgrid(np.linspace(0, 1, S), np.linspace(0, 1, S))
     a = np.random.uniform(-1, 1, 2)
-    light = 1 + random.uniform(0, 0.35) * ((gx * a[0] + gy * a[1]) - (a.sum() / 2))
-    img *= light[..., None]
+    img *= (1 + random.uniform(0, 0.35) * ((gx * a[0] + gy * a[1]) - a.sum() / 2))[..., None]
     if random.random() < 0.3:
         k = random.choice([3, 5])
         img = cv2.GaussianBlur(img, (k, k), 0)
@@ -164,50 +176,40 @@ def camera_effects(img):
 
 
 def make_scene(assets):
-    if assets.coin_scenes and random.random() < 0.4:
-        canvas, objects = coin_scene_background(random.choice(assets.coin_scenes))
+    if not assets.textures or random.random() < 0.4:
+        canvas, objects = scene_background(random.choice(assets.scenes))
     else:
-        canvas, objects = random_crop_resize(imread(random.choice(assets.textures))), []
-    for o in objects:
-        o["area"] = o["mask"].sum()
+        canvas, objects = texture_background(random.choice(assets.textures))
 
-    n_bills = random.choices([1, 2, 3, 4, 5], weights=[30, 30, 20, 12, 8])[0]
-    base = S * random.uniform(0.35, 0.8) / (1 + 0.25 * (n_bills - 1))  # width of a 50,000 won bill
+    n_bills = random.choices([0, 1, 2, 3, 4, 5], weights=[10, 25, 25, 20, 12, 8])[0]
+    base = S * random.uniform(0.35, 0.75) / (1 + 0.25 * max(n_bills - 1, 0))  # 50,000 won bill width
     spread = random.uniform(0.15, 0.35) * S
     anchor = np.array([random.uniform(0.3, 0.7) * S, random.uniform(0.3, 0.7) * S])
-    fan_angle = random.uniform(0, 360)
+    fan = random.uniform(0, 360)
 
-    for i in range(n_bills):
+    for _ in range(n_bills):
         cls = random.choice(list(BILL_WIDTH_MM))
-        tpl = random.choice(assets.templates[cls])
-        tpl = add_crease(jitter_color(tpl))
+        crop = add_crease(jitter_color(random.choice(assets.cutouts[cls])))
         width = base * BILL_WIDTH_MM[cls] / 154
         center = anchor + np.random.uniform(-spread, spread, 2)
-        angle = fan_angle + random.uniform(-40, 40) if random.random() < 0.6 else random.uniform(0, 360)
-        quad = bill_quad(width, tpl.shape[1] / tpl.shape[0], center, angle, random.uniform(0, 0.08))
-        patch, mask = warp_to_canvas(tpl, quad)
-        area = mask.sum()
+        angle = fan + random.uniform(-40, 40) if random.random() < 0.6 else random.uniform(0, 360)
+        quad = bill_quad(width, crop.shape[1] / crop.shape[0], center, angle, random.uniform(0, 0.08))
+        patch, mask = warp_quad(crop, quad)
         paste(canvas, objects, patch, mask, CLASSES.index(cls))
-        objects[-1]["area"] = area
 
-    # real coins on top of the bills, sized relative to them
-    if any(assets.coin_cutouts.values()) and random.random() < 0.6:
-        for _ in range(random.randint(1, 6)):
-            cls = random.choice([c for c, v in assets.coin_cutouts.items() if v])
-            crop = jitter_color(random.choice(assets.coin_cutouts[cls]))
-            d = base / 154 * COIN_DIAM_MM[cls] * random.uniform(0.9, 1.1)
-            crop = cv2.resize(crop, (max(8, int(d)), max(8, int(d))))
-            m = np.zeros(crop.shape[:2], np.float32)
-            cv2.ellipse(m, (crop.shape[1] // 2, crop.shape[0] // 2),
-                        (crop.shape[1] // 2 - 1, crop.shape[0] // 2 - 1), 0, 0, 360, 1.0, -1)
-            x, y = random.randint(0, S - crop.shape[1]), random.randint(0, S - crop.shape[0])
-            patch = np.zeros_like(canvas)
-            mask = np.zeros((S, S), np.float32)
-            patch[y:y + crop.shape[0], x:x + crop.shape[1]] = crop
-            mask[y:y + crop.shape[0], x:x + crop.shape[1]] = m
-            area = mask.sum()
-            paste(canvas, objects, patch, mask, CLASSES.index(cls), shadow=random.random() < 0.5)
-            objects[-1]["area"] = area
+    coins = [c for c in COIN_DIAM_MM if assets.cutouts[c]]
+    for _ in range(random.randint(1 if n_bills == 0 else 0, 7)):
+        cls = random.choice(coins)
+        crop = jitter_color(random.choice(assets.cutouts[cls]))
+        d = max(12, int(base / 154 * COIN_DIAM_MM[cls] * random.uniform(0.9, 1.1)))
+        crop = cv2.resize(crop, (d, d))
+        m = np.zeros((d, d), np.float32)
+        cv2.ellipse(m, (d // 2, d // 2), (d // 2 - 1, d // 2 - 1), 0, 0, 360, 1.0, -1)
+        x, y = random.randint(0, S - d), random.randint(0, S - d)
+        patch, mask = np.zeros_like(canvas), np.zeros((S, S), np.float32)
+        patch[y:y + d, x:x + d] = crop
+        mask[y:y + d, x:x + d] = m
+        paste(canvas, objects, patch, mask, CLASSES.index(cls), shadow=random.random() < 0.5)
 
     labels = []
     for o in objects:

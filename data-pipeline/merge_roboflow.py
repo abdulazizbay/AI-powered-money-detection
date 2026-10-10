@@ -12,7 +12,7 @@ from collections import Counter
 import cv2
 import yaml
 
-from config import CLASS_BY_VALUE, CLASSES, MERGED, RAW_ROBOFLOW
+from config import CLASS_BY_VALUE, CLASSES, MERGED, RAW_ROBOFLOW, ROBOFLOW_CLASS_OVERRIDES
 
 SPLITS = {"train": "train", "valid": "val", "test": "test"}
 KOREAN_VALUES = {
@@ -57,7 +57,9 @@ def main():
         names = yaml.safe_load((ds_dir / "data.yaml").read_text("utf-8"))["names"]
         if isinstance(names, dict):
             names = [names[k] for k in sorted(names)]
-        mapping = {i: map_name(n) for i, n in enumerate(names)}
+        override = ROBOFLOW_CLASS_OVERRIDES.get(ds_dir.name, {})
+        mapping = {i: CLASSES.index(override[str(n)]) if str(n) in override else map_name(n)
+                   for i, n in enumerate(names)}
         report[ds_dir.name] = {n: (CLASSES[mapping[i]] if mapping[i] is not None else None)
                                for i, n in enumerate(names)}
         kept = dropped = dupes = 0
