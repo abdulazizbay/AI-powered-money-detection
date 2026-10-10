@@ -9,10 +9,12 @@ Each scene:
 Cutouts come from the same split only (train scenes never use val photos).
 Labels are boxes around the *visible* part of each object; mostly hidden objects are dropped.
 
-Usage: python synth_bills.py --train 3000 --val 300
+Usage: python synth_bills.py --train 3000 --val 300 [--workers 12]
 """
 import argparse
+import pickle
 import random
+from multiprocessing import Pool, cpu_count
 
 import cv2
 import numpy as np
@@ -24,7 +26,7 @@ S = IMG_SIZE
 BILL_WIDTH_MM = {"bill_1000": 136, "bill_5000": 142, "bill_10000": 148, "bill_50000": 154}
 COIN_DIAM_MM = {"coin_10": 18.0, "coin_50": 21.6, "coin_100": 24.0, "coin_500": 26.5}
 MIN_VISIBLE = {"bill": 0.35, "coin": 0.6}
-MAX_CUTOUTS = 400  # per class
+MAX_CUTOUTS = 150  # per class
 
 
 def imread(path):
@@ -70,7 +72,11 @@ class Assets:
                                                                cv2.ROTATE_90_COUNTERCLOCKWISE]))
                     ok = 1.7 < max(bw, bh) / min(bw, bh) < 2.6  # flat, roughly axis-aligned bill
                 if ok:
-                    self.cutouts[CLASSES[l[0]]].append(crop.copy())
+                    # store at the largest size a scene can use, to keep the cache small
+                    limit = 160 if CLASSES[l[0]].startswith("coin") else 320
+                    r = min(1.0, limit / max(crop.shape[:2]))
+                    self.cutouts[CLASSES[l[0]]].append(cv2.resize(crop, None, fx=r, fy=r,
+                                                                  interpolation=cv2.INTER_AREA))
         print(f"[{split}] scenes {len(self.scenes)}, cutouts "
               + ", ".join(f"{c}={len(v)}" for c, v in self.cutouts.items()))
         missing = [c for c in BILL_WIDTH_MM if not self.cutouts[c]]
@@ -213,26 +219,50 @@ def make_scene(assets):
     return camera_effects(canvas), labels
 
 
-def generate(split, count):
+def load_assets(split):
+    """Build cutouts once per split and cache them, so worker processes start fast."""
+    cache = SYNTH / f"assets_{split}.pkl"
+    if cache.exists():
+        return pickle.loads(cache.read_bytes())
     assets = Assets(split)
-    img_dir, lbl_dir = SYNTH / split / "images", SYNTH / split / "labels"
-    img_dir.mkdir(parents=True, exist_ok=True)
-    lbl_dir.mkdir(parents=True, exist_ok=True)
-    for i in tqdm(range(count), desc=split):
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_bytes(pickle.dumps(assets))
+    return assets
+
+
+def worker(job):
+    split, start, end = job
+    cv2.setNumThreads(1)
+    random.seed(SEED + start)
+    np.random.seed(SEED + start)
+    assets = load_assets(split)
+    for i in range(start, end):
         img, labels = make_scene(assets)
-        cv2.imwrite(str(img_dir / f"synth_{split}_{i:05d}.jpg"), img)
-        (lbl_dir / f"synth_{split}_{i:05d}.txt").write_text("\n".join(labels))
+        cv2.imwrite(str(SYNTH / split / "images" / f"synth_{split}_{i:05d}.jpg"), img)
+        (SYNTH / split / "labels" / f"synth_{split}_{i:05d}.txt").write_text("\n".join(labels))
+    return end - start
+
+
+def generate(split, count, workers):
+    random.seed(SEED)
+    load_assets(split)
+    (SYNTH / split / "images").mkdir(parents=True, exist_ok=True)
+    (SYNTH / split / "labels").mkdir(parents=True, exist_ok=True)
+    step = 50
+    jobs = [(split, s, min(s + step, count)) for s in range(0, count, step)]
+    with Pool(workers) as pool, tqdm(total=count, desc=split) as bar:
+        for n in pool.imap_unordered(worker, jobs):
+            bar.update(n)
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--train", type=int, default=3000)
     ap.add_argument("--val", type=int, default=300)
+    ap.add_argument("--workers", type=int, default=min(4, cpu_count()))
     args = ap.parse_args()
-    random.seed(SEED)
-    np.random.seed(SEED)
-    generate("train", args.train)
-    generate("val", args.val)
+    generate("train", args.train, args.workers)
+    generate("val", args.val, args.workers)
 
 
 if __name__ == "__main__":
