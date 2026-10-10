@@ -1,0 +1,24 @@
+{
+  "test_mAP50": 0.9807,
+  "test_mAP50_95": 0.9684,
+  "test_precision": 0.9681,
+  "test_recall": 0.9594,
+  "per_class_mAP50": {
+    "coin_10": 0.983,
+    "coin_50": 0.9789,
+    "coin_100": 0.9355,
+    "coin_500": 0.9685,
+    "bill_1000": 0.995,
+    "bill_5000": 0.995,
+    "bill_10000": 0.995,
+    "bill_50000": 0.995
+  },
+  "inference_ms": 3.56,
+  "inference_device": "Tesla T4 GPU",
+  "val_mAP50": 0.966,
+  "val_mAP50_95": 0.914,
+  "epochs": 30,
+  "training_hours": 1.27,
+  "test_images": 553,
+  "test_objects": 623
+}
