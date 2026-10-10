@@ -50,6 +50,7 @@ function render(result) {
   lastResult = result;
   drawBoxes(result);
   $("ms").textContent = `${result.inference_ms} ms`;
+  $("badge-ms").textContent = `${Math.round(result.inference_ms)} ms`;
   $("total").textContent = won(result.total);
   $("items").textContent = `${result.items} item${result.items === 1 ? "" : "s"} detected`;
   renderRates(result.total);
@@ -187,7 +188,6 @@ fetch("/api/rates").then((r) => r.ok ? r.json() : null).then((d) => { rates = d;
 fetch("/api/model").then((r) => r.json()).then(({ metrics: m }) => {
   if (!m) return;
   $("badge-map").textContent = `${(m.test_mAP50 * 100).toFixed(1)}%`;
-  $("badge-ms").textContent = `${Math.round(m.inference_ms)} ms`;
   $("metrics").innerHTML = [
     ["mAP50", m.test_mAP50], ["mAP50-95", m.test_mAP50_95], ["Precision", m.test_precision], ["Recall", m.test_recall],
   ].map(([k, v]) => `<div><b>${(v * 100).toFixed(1)}%</b><small>${k}</small></div>`).join("");

@@ -93,7 +93,7 @@ async def rates():
     if rates_cache["data"] is None or time.time() - rates_cache["at"] > RATE_TTL:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get("https://api.frankfurter.app/latest",
+                r = await client.get("https://api.frankfurter.dev/v1/latest",
                                      params={"from": "KRW", "to": "USD,EUR,JPY,CNY"})
                 r.raise_for_status()
             rates_cache.update(at=time.time(), data=r.json())
@@ -108,6 +108,13 @@ def model_info():
     metrics_path = ROOT / "models" / "metrics.json"
     metrics = json.loads(metrics_path.read_text()) if metrics_path.exists() else None
     return {"name": "YOLOv8n", "format": "ONNX", "input": 640, "classes": CLASSES, "metrics": metrics}
+
+
+@app.middleware("http")
+async def no_cache(request, call_next):
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-cache"  # always revalidate the web files
+    return response
 
 
 app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
