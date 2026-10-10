@@ -2,6 +2,8 @@
 
 AI system that detects Korean coins and bills in an image or live camera feed, counts each denomination and shows the total amount in won (plus USD/EUR/JPY/CNY).
 
+![KRW Money Counter dashboard](docs/screenshots/1_dashboard_top.png)
+
 **Classes (8):** ₩10 · ₩50 · ₩100 · ₩500 coins, ₩1,000 · ₩5,000 · ₩10,000 · ₩50,000 bills
 
 ## How it works
