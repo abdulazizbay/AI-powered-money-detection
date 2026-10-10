@@ -2,7 +2,7 @@
 
 The Roboflow photos show one denomination at a time; the app must count mixed piles.
 Each scene:
-  background = DTD texture or a real labeled photo (its labels are kept)
+  background = a real labeled photo (its labels are kept)
   bills      = real bill crops -> color jitter -> crease shading -> perspective warp -> drop shadow
   coins      = elliptical crops of real coins, sized relative to the bills (real mm ratios)
   camera     = lighting gradient, blur, noise, JPEG artifacts
@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
-from config import BACKGROUNDS, CLASSES, IMG_SIZE, MERGED, SEED, SYNTH
+from config import CLASSES, IMG_SIZE, MERGED, SEED, SYNTH
 
 S = IMG_SIZE
 BILL_WIDTH_MM = {"bill_1000": 136, "bill_5000": 142, "bill_10000": 148, "bill_50000": 154}
@@ -45,7 +45,6 @@ def box_px(label, w, h):
 
 class Assets:
     def __init__(self, split):
-        self.textures = sorted(BACKGROUNDS.glob("*.jpg"))
         self.scenes = sorted((MERGED / split / "images").glob("*"))
         self.cutouts = {c: [] for c in CLASSES}
         for img_path in random.sample(self.scenes, len(self.scenes)):
@@ -72,20 +71,11 @@ class Assets:
                     ok = 1.7 < max(bw, bh) / min(bw, bh) < 2.6  # flat, roughly axis-aligned bill
                 if ok:
                     self.cutouts[CLASSES[l[0]]].append(crop.copy())
-        print(f"[{split}] textures {len(self.textures)}, scenes {len(self.scenes)}, cutouts "
+        print(f"[{split}] scenes {len(self.scenes)}, cutouts "
               + ", ".join(f"{c}={len(v)}" for c, v in self.cutouts.items()))
         missing = [c for c in BILL_WIDTH_MM if not self.cutouts[c]]
         if missing:
             raise SystemExit(f"no bill cutouts for {missing}; run merge_roboflow.py first")
-
-
-def texture_background(path):
-    img = imread(path)
-    h, w = img.shape[:2]
-    scale = S / min(h, w) * random.uniform(1.0, 1.4)
-    img = cv2.resize(img, (max(S, int(w * scale)), max(S, int(h * scale))))
-    y, x = random.randint(0, img.shape[0] - S), random.randint(0, img.shape[1] - S)
-    return img[y:y + S, x:x + S].copy(), []
 
 
 def scene_background(path):
@@ -176,13 +166,10 @@ def camera_effects(img):
 
 
 def make_scene(assets):
-    if not assets.textures or random.random() < 0.4:
-        canvas, objects = scene_background(random.choice(assets.scenes))
-    else:
-        canvas, objects = texture_background(random.choice(assets.textures))
+    canvas, objects = scene_background(random.choice(assets.scenes))
 
     n_bills = random.choices([0, 1, 2, 3, 4, 5], weights=[10, 25, 25, 20, 12, 8])[0]
-    base = S * random.uniform(0.35, 0.75) / (1 + 0.25 * max(n_bills - 1, 0))  # 50,000 won bill width
+    base = S * random.uniform(0.45, 0.8) / (1 + 0.2 * max(n_bills - 1, 0))  # 50,000 won bill width
     spread = random.uniform(0.15, 0.35) * S
     anchor = np.array([random.uniform(0.3, 0.7) * S, random.uniform(0.3, 0.7) * S])
     fan = random.uniform(0, 360)
@@ -201,7 +188,7 @@ def make_scene(assets):
     for _ in range(random.randint(1 if n_bills == 0 else 0, 7)):
         cls = random.choice(coins)
         crop = jitter_color(random.choice(assets.cutouts[cls]))
-        d = max(12, int(base / 154 * COIN_DIAM_MM[cls] * random.uniform(0.9, 1.1)))
+        d = max(20, int(base / 154 * COIN_DIAM_MM[cls] * random.uniform(0.9, 1.1)))
         crop = cv2.resize(crop, (d, d))
         m = np.zeros((d, d), np.float32)
         cv2.ellipse(m, (d // 2, d // 2), (d // 2 - 1, d // 2 - 1), 0, 0, 360, 1.0, -1)

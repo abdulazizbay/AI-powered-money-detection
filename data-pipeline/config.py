@@ -4,7 +4,6 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
 
 RAW_ROBOFLOW = DATA / "raw" / "roboflow"
-BACKGROUNDS = DATA / "backgrounds"
 MERGED = DATA / "merged"                     # roboflow data, unified classes
 SYNTH = DATA / "synth"                       # generated bill scenes
 DATASET = DATA / "dataset"                   # final YOLO dataset
@@ -26,14 +25,6 @@ ROBOFLOW_DATASETS = [
 ROBOFLOW_CLASS_OVERRIDES = {
     "korean-money-lkeay": {str(i): c for i, c in enumerate(CLASSES)},
 }
-
-# DTD textures used as synthetic backgrounds (table/cloth/paper-like surfaces).
-DTD_URL = "https://www.robots.ox.ac.uk/~vgg/data/dtd/download/dtd-r1.0.1.tar.gz"
-DTD_CATEGORIES = [
-    "grooved", "stratified", "veined", "marbled", "woven", "fibrous", "lined",
-    "matted", "porous", "wrinkled", "blotchy", "stained", "flecked", "striped",
-    "chequered", "knitted", "pleated", "crosshatched", "grid", "sprinkled",
-]
 
 IMG_SIZE = 640
 SEED = 42
